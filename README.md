@@ -11,14 +11,14 @@ make
 # testing
 ## on local machine:
 ```
-python -m SimpleHTTPServer 2222
+python -m SimpleHTTPServer 8080
 or
-nc -l 2222
+nc -l 8080
 ```
 
 # on remote host
 ```
-curl localhost:2222
+curl localhost:4000
 or
-nc 127.0.0.1 2222
+nc 127.0.0.1 4000
 ```

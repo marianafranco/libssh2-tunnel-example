@@ -33,12 +33,12 @@ const char *password = "";
 
 const char *server_ip = "127.0.0.1";
 
-const char *remote_listenhost = "localhost"; /* resolved by the server */
-int remote_wantport = 2222;
+const char *remote_listenhost = "localhost"; /* resolved by the remote server */
+int remote_wantport = 4000;
 int remote_listenport;
 
 const char *local_destip = "127.0.0.1";
-int local_destport = 2222;
+int local_destport = 8080;
 
 enum {
     AUTH_NONE = 0,
@@ -47,40 +47,41 @@ enum {
 };
 
 
-int listen_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
+int forward_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
     int i, rc = 0;
     struct sockaddr_in sin;
-    socklen_t sinlen = sizeof(sin);
     fd_set fds;
     struct timeval tv;
     ssize_t len, wr;
     char buf[16384];
     int forwardsock = -1;
 
-    fprintf(stderr,
+    fprintf(stdout,
         "Accepted remote connection. Connecting to local server %s:%d\n",
         local_destip, local_destport);
     forwardsock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (forwardsock == -1) {
-        perror("socket");
+        fprintf(stderr, "Error opening socket\n");
         goto shutdown;
     }
 
     sin.sin_family = AF_INET;
     sin.sin_port = htons(local_destport);
     if (INADDR_NONE == (sin.sin_addr.s_addr = inet_addr(local_destip))) {
-        perror("inet_addr");
-        goto shutdown;
-    }
-    if (-1 == connect(forwardsock, (struct sockaddr *)&sin, sinlen)) {
-        perror("connect");
+        fprintf(stderr, "Invalid local IP address\n");
         goto shutdown;
     }
 
-    fprintf(stderr, "Forwarding connection from remote %s:%d to local %s:%d\n",
+    if (-1 == connect(forwardsock, (struct sockaddr *)&sin,
+          sizeof(struct sockaddr_in))) {
+        fprintf(stderr, "Failed to connect!\n");
+        goto shutdown;
+    }
+
+    fprintf(stdout, "Forwarding connection from remote %s:%d to local %s:%d\n",
         remote_listenhost, remote_listenport, local_destip, local_destport);
 
-    /* Must use non-blocking IO hereafter due to the current libssh2 API */
+    /* Setting session to non-blocking IO */
     libssh2_session_set_blocking(session, 0);
 
     while (1) {
@@ -90,13 +91,13 @@ int listen_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
         tv.tv_usec = 100000;
         rc = select(forwardsock + 1, &fds, NULL, NULL, &tv);
         if (-1 == rc) {
-            perror("select");
+            fprintf(stderr, "Socket not ready!\n");
             goto shutdown;
         }
         if (rc && FD_ISSET(forwardsock, &fds)) {
             len = recv(forwardsock, buf, sizeof(buf), 0);
             if (len < 0) {
-                perror("read");
+                fprintf(stderr, "Error reading from the forwardsock!\n");
                 goto shutdown;
             } else if (0 == len) {
                 fprintf(stderr, "The local server at %s:%d disconnected!\n",
@@ -107,7 +108,7 @@ int listen_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
             do {
                 i = libssh2_channel_write(channel, buf, len);
                 if (i < 0) {
-                    fprintf(stderr, "libssh2_channel_write: %d\n", i);
+                    fprintf(stderr, "Error writing on the SSH channel: %d\n", i);
                     goto shutdown;
                 }
                 wr += i;
@@ -118,14 +119,14 @@ int listen_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
             if (LIBSSH2_ERROR_EAGAIN == len)
                 break;
             else if (len < 0) {
-                fprintf(stderr, "libssh2_channel_read: %d", (int)len);
+                fprintf(stderr, "Error reading from the SSH channel: %d\n", (int)len);
                 goto shutdown;
             }
             wr = 0;
             while (wr < len) {
                 i = send(forwardsock, buf + wr, len - wr, 0);
                 if (i <= 0) {
-                    perror("write");
+                    fprintf(stderr, "Error writing on the forwardsock!\n");
                     goto shutdown;
                 }
                 wr += i;
@@ -140,6 +141,7 @@ int listen_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
 
 shutdown:
     close(forwardsock);
+    /* Setting the session back to blocking IO */
     libssh2_session_set_blocking(session, 1);
     return rc;
 }
@@ -180,26 +182,26 @@ int main(int argc, char *argv[]) {
     /* Connect to SSH server */
     sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == -1) {
-        perror("socket");
+        fprintf(stderr, "Error opening socket\n");
         return -1;
     }
 
     sin.sin_family = AF_INET;
     if (INADDR_NONE == (sin.sin_addr.s_addr = inet_addr(server_ip))) {
-        perror("inet_addr");
+        fprintf(stderr, "Invalid remote IP address\n");
         return -1;
     }
-    sin.sin_port = htons(22);
+    sin.sin_port = htons(22); /* SSH port */
     if (connect(sock, (struct sockaddr*)(&sin),
                 sizeof(struct sockaddr_in)) != 0) {
-        fprintf(stderr, "failed to connect!\n");
+        fprintf(stderr, "Failed to connect!\n");
         return -1;
     }
 
     /* Create a session instance */
     session = libssh2_session_init();
     if(!session) {
-        fprintf(stderr, "Could not initialize SSH session!\n");
+        fprintf(stderr, "Could not initialize the SSH session!\n");
         return -1;
     }
 
@@ -218,10 +220,10 @@ int main(int argc, char *argv[]) {
      * user, that's your call
      */
     fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA1);
-    fprintf(stderr, "Fingerprint: ");
+    fprintf(stdout, "Fingerprint: ");
     for(i = 0; i < 20; i++)
-        fprintf(stderr, "%02X ", (unsigned char)fingerprint[i]);
-    fprintf(stderr, "\n");
+        fprintf(stdout, "%02X ", (unsigned char)fingerprint[i]);
+    fprintf(stdout, "\n");
 
     /* check what authentication methods are available */
     userauthlist = libssh2_userauth_list(session, username, strlen(username));
@@ -256,7 +258,7 @@ int main(int argc, char *argv[]) {
         goto shutdown;
     }
 
-    fprintf(stderr, "Asking server to listen on remote %s:%d\n",
+    fprintf(stdout, "Asking server to listen on remote %s:%d\n",
         remote_listenhost, remote_wantport);
 
     listener = libssh2_channel_forward_listen_ex(session, remote_listenhost,
@@ -268,13 +270,11 @@ int main(int argc, char *argv[]) {
         goto shutdown;
     }
 
-    fprintf(stderr, "Server is listening on %s:%d\n", remote_listenhost,
+    fprintf(stdout, "Server is listening on %s:%d\n", remote_listenhost,
         remote_listenport);
 
-    fprintf(stderr, "Waiting for remote connection\n");
-
-
     while (1) {
+        fprintf(stdout, "Waiting for remote connection\n");
         channel = libssh2_channel_forward_accept(listener);
         if (!channel) {
             fprintf(stderr, "Could not accept connection!\n"
@@ -283,7 +283,7 @@ int main(int argc, char *argv[]) {
             goto shutdown;
         }
 
-        listen_tunnel(session, channel);
+        forward_tunnel(session, channel);
 
         libssh2_channel_free(channel);
     }
