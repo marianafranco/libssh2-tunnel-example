@@ -106,7 +106,10 @@ int forward_tunnel(LIBSSH2_SESSION *session, LIBSSH2_CHANNEL *channel) {
             }
             wr = 0;
             do {
-                i = libssh2_channel_write(channel, buf, len);
+                i = LIBSSH2_ERROR_EAGAIN;
+                while (i == LIBSSH2_ERROR_EAGAIN) {
+                    i = libssh2_channel_write(channel, buf, len);
+                }
                 if (i < 0) {
                     fprintf(stderr, "Error writing on the SSH channel: %d\n", i);
                     goto shutdown;
